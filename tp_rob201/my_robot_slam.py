@@ -3,6 +3,7 @@ Robot controller definition
 Complete controller including SLAM, planning, path following
 """
 import numpy as np
+import win32api, win32con
 
 from place_bot.entities.robot_abstract import RobotAbstract
 from place_bot.entities.odometer import OdometerParams
@@ -30,6 +31,8 @@ class MyRobotSlam(RobotAbstract):
         # step counter to deal with init and display
         self.counter = 0
 
+        self.trajectory = []
+
         # Init SLAM object
         # Here we cheat to get an occupancy grid size that's not too large, by using the
         # robot's starting position and the maximum map size that we shouldn't know.
@@ -51,7 +54,7 @@ class MyRobotSlam(RobotAbstract):
         """
         Main control function executed at each time step
         """
-        return self.control_tp2()
+        return self.control_tp1()
 
     def control_tp1(self):
         """
@@ -68,9 +71,76 @@ class MyRobotSlam(RobotAbstract):
         Main control function with full SLAM, random exploration and path planning
         """
         pose = self.odometer_values()
-        goal = [0,0,0]
+        goal = [-250,-450,0]
 
         # Compute new command speed to perform obstacle avoidance
         command = potential_field_control(self.lidar(), pose, goal)
+
+        return command
+
+    def control_tp3(self):
+        """
+        Control function for TP3
+        Control function for map update
+        """
+        pose = self.odometer_values()
+        lidar = self.lidar()
+
+        self.tiny_slam.update_map(lidar, pose)
+    
+    def control_tp4(self):
+        """
+        Control function for TP4
+        Control function for localization
+        """
+        pose = self.odometer_values()
+        lidar = self.lidar()
+
+        if self.counter < 10:
+            self.tiny_slam.update_map(lidar, pose)
+            self.counter += 1
+        else:
+            best_score = self.tiny_slam.localise(lidar, pose)
+            if best_score > 100:
+                print("Best score: ", best_score)
+                self.tiny_slam.update_map(lidar, pose)
+
+    def control_tp5(self):
+        """
+        Control function for TP5
+        Control function for trajectory planification
+        """
+        exploration_counter = 5000
+        print("Counter: ", self.counter)
+
+        if self.counter < exploration_counter:
+            command = reactive_obst_avoid(self.lidar())
+        else:
+            if not hasattr(self, 'path'):
+                start_pose = self.odometer_values()
+                start_cell = self.occupancy_grid.conv_world_to_map(start_pose[0], start_pose[1])
+                goal_cell = [0, 0] 
+                self.path = self.planner.plan(start_cell, goal_cell)
+
+                self.path_world = [self.occupancy_grid.conv_map_to_world(cell[0], cell[1]) for cell in self.path]
+
+                self.path_index = 0
+
+            if self.path_index >= len(self.path_world):
+                return {"forward": 0, "rotation": 0}
+
+            goal_pose = self.path_world[self.path_index]
+            current_pose = self.odometer_values()
+
+            command = potential_field_control(self.lidar(), current_pose, goal_pose)
+
+            distance_to_goal = np.linalg.norm(np.array(goal_pose[:2]) - np.array(current_pose[:2]))
+            if distance_to_goal < 10:
+                self.path_index += 1
+
+        if self.counter % 1 == 0:
+            self.occupancy_grid.display_cv(self.tiny_slam.get_corrected_pose(self.odometer_values()), self.trajectory)
+        
+        self.counter += 1
 
         return command

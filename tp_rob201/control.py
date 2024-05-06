@@ -2,6 +2,7 @@
 
 import random
 import numpy as np
+from operator import itemgetter
 
 def reactive_obst_avoid(lidar):
     """
@@ -16,27 +17,22 @@ def reactive_obst_avoid(lidar):
     front_angles = (ray_angles > -np.pi/2) & (ray_angles < np.pi/2)
     front_distances = sensor_values[front_angles]
     obstacle_in_front = np.min(front_distances)
-    safe_angles = (sensor_values > 20)
-    safe_directions = ray_angles[safe_angles]
 
-    if obstacle_in_front < 20:
-        speed = -0.5
+    if obstacle_in_front < 35:
 
-        if len(safe_directions) > 0:
-            rotation_speed = np.max(safe_directions) / np.pi
+        index_max_distance = np.argmax(front_distances)
+        angle_max_distance = ray_angles[front_angles][index_max_distance]
+
+        rotation_speed = np.sign(angle_max_distance)
+
+        if obstacle_in_front < 15:
+            speed = 0.0
+            
         else:
-            rotation_speed = random.uniform(-1, 1)
-
-    elif obstacle_in_front < 30 and obstacle_in_front > 20:
-        speed = 0.5
-
-        if len(safe_directions) > 0:
-            rotation_speed = 0.5 * np.max(safe_directions) / np.pi
-        else:
-            rotation_speed = 0.5 * random.uniform(-1, 1)
+            speed = 0.3
 
     else:
-        speed = 0.8
+        speed = 0.5
         rotation_speed = 0.0
 
     command = {"forward": speed,
@@ -63,64 +59,56 @@ def potential_field_control(lidar, current_pose, goal_pose):
     q = current_pose
     qgoal = goal_pose
 
-    max_speed = 0.5
-    max_rotation_speed = 1.0
+    distance_to_goal = np.linalg.norm(qgoal - q)
+    print("distance_to_goal: ", distance_to_goal)
+    threshold_distance = 15
 
-    front_angles = (ray_angles > -np.pi/2) & (ray_angles < np.pi/2)
-    front_distances = sensor_values[front_angles]
-
-    obs_indice = np.argmin(front_distances)
-    obs_angle = ray_angles[obs_indice]
-    obs_distance = front_distances[obs_indice]
-    x = obs_distance * np.cos(obs_angle)
-    y = obs_distance * np.sin(obs_angle)
-    
-    qobs = np.array([x,y,obs_angle])
-
-    
-    distance = np.sqrt((qgoal[0]- q[0])**2 + (qgoal[1]- q[1])**2)
-    dlim = 10
-
-    if distance > dlim:
-        potential_att = (qgoal - q) / distance
+    if distance_to_goal < threshold_distance:
+        speed = 0
+        rotation_speed = 0
+        print("Goal reached")
     else:
-        potential_att = (qgoal - q) / dlim
-
-    try:
-        potential_att_sum += potential_att
-    except:
-        potential_att_sum = potential_att
+        # Attractive potential field
+        distance_att = qgoal - q
+        potential_att = (1/np.linalg.norm(distance_att[:2]))*distance_att[:2]
 
 
-    distance = np.sqrt((qobs[0]- q[0])**2 + (qobs[1]- q[1])**2)
-    distance3 = distance**3
-    dsafe = 10
-    print("distance: ",distance)
+        # Repulsive potential field
+        obs_indice = np.argmin(sensor_values)
+        obs_angle = ray_angles[obs_indice]
+        obs_distance = sensor_values[obs_indice]
 
-    if distance > dsafe:
-        potential_rep = np.zeros_like(potential_att)
-    else:
-        Kobs = 1
-        den = ((1/distance) - (1/dsafe))
-        print("den: ",den)
-        potential_rep = Kobs * ((qobs - q) / (distance3)) * den
+        obs_x = q[0] + obs_distance * np.cos(obs_angle + q[2])
+        obs_y = q[1] + obs_distance * np.sin(obs_angle + q[2])
+        obs_position = np.array([obs_x, obs_y, obs_angle])
 
-    try:
-        potential_rep_sum += potential_rep
-    except:
-        potential_rep_sum = potential_rep
+        distance_rep = obs_position - q
+        potential_rep = (1/np.linalg.norm(distance_rep[:2]))*distance_rep[:2]
 
-    potential_total = potential_att_sum + potential_rep_sum
-    # print("att: ",potential_att_sum)
-    # print("rep: ",potential_rep_sum)
-    # print("total: ",potential_total)
 
-    if distance != 0.0:
-        speed = np.clip(np.linalg.norm(potential_total[:2]), -1, 1) * max_speed
-        rotation_speed = np.clip(potential_total[2], -1, 1) * max_rotation_speed 
-    else:
-        speed = 0.0
-        rotation_speed = 0.0
+        # Total potential field
+        max_distance = 30
+        k_obs = (max_distance - obs_distance) / (max_distance)
+        k_obs = np.clip(k_obs, 0, 1)
+
+        combined_potentials = (1 - k_obs) * potential_att - (k_obs) * potential_rep
+        potential_total = (1/np.linalg.norm(combined_potentials[:2]))*combined_potentials[:2]
+
+
+        # Speed and rotation definition
+        k_rotation = 1
+
+        delta_rotation = np.arctan2(potential_total[1],potential_total[0]) - q[2]
+        rotation_speed = k_rotation * delta_rotation
+        rotation_speed = np.clip(rotation_speed,-1,1)
+
+        min_speed = 0.1
+        max_speed = 0.4
+        k_angle = 0.5
+
+        speed = np.linalg.norm(potential_total)
+        speed -= k_angle * abs(delta_rotation)
+        speed = np.clip(speed, min_speed, max_speed)
 
     command = {"forward": speed,
                "rotation": rotation_speed}
